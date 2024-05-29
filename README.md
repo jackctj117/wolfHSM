@@ -5,7 +5,7 @@ wolfHSM is intended to simplify the challenge of moving between hardware with
 enhanced security features without being tied to any vendor-specific library
 calls.
 
-Although initially targetted to automotive-style HSM-enabled microcontrollers,
+Although initially targeted to automotive-style HSM-enabled microcontrollers,
 wolfHSM provides an extensible solution to support future capabilities of
 platforms while still supporting standardized interfaces and protocols such as
 PKCS11 and AUTOSAR SHE.
@@ -17,7 +17,7 @@ configuration, and context storage architecture to allow compile-time, link-
 time, and/or run-time selection of functional components.  Hardware specifics
 are abstracted from the logical operations by associating callback functions
 with untyped context structures, referenced as a void*.
- 
+
 ## Example component initialization
 The prototypical compile-time static instance configuration and initialization
 sequence of a ported component is:
