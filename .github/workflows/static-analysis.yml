@@ -55,3 +55,50 @@ jobs:
       run: |
         echo "❌ Static analysis failed - errors or warnings were found"
         exit 1
+
+  clang-tidy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-tidy-15 build-essential autoconf automake libtool
+
+    - name: Install wolfSSL (headers/libs needed for includes)
+      run: |
+        git clone --depth 1 https://github.com/wolfSSL/wolfssl.git /tmp/wolfssl
+        cd /tmp/wolfssl
+        ./autogen.sh
+        ./configure --enable-all
+        make -j$(nproc)
+        sudo make install
+
+    - name: Run clang-tidy
+      id: clang-tidy
+      continue-on-error: true
+      run: |
+        mkdir -p tools/static-analysis/reports
+        COMMON_FLAGS="-Iwolfhsm -I/usr/local/include -std=c99"
+        echo "## Clang-Tidy Report" > tools/static-analysis/reports/clang_tidy_summary.txt
+        find src wolfhsm -name "*.c" -not -path "*/test/*" | sort | while read f; do
+          echo "Checking $f"
+          clang-tidy-15 "$f" --config-file=.clang-tidy -- $COMMON_FLAGS 2>&1 \
+            | grep -E "(warning|error):" \
+            | tee -a tools/static-analysis/reports/clang_tidy_summary.txt || true
+        done
+        if grep -q -E "(warning|error):" tools/static-analysis/reports/clang_tidy_summary.txt; then
+          echo "ISSUES_FOUND=true" >> $GITHUB_OUTPUT
+        else
+          echo "ISSUES_FOUND=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Upload clang-tidy results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: clang-tidy-results
+        path: tools/static-analysis/reports/clang_tidy_summary.txt

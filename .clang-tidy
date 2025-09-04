@@ -1,0 +1,8 @@
+---
+Checks: >
+  -*,bugprone-*,cert-*,clang-analyzer-*,misc-*,readability-*,
+  -readability-magic-numbers,-readability-isolate-declaration,
+  -cert-err33-c,-cert-err34-c,-bugprone-reserved-identifier,
+  -cert-dcl37-c,-cert-dcl51-cpp,-misc-unused-parameters
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*(wolfhsm|wh_).*\.h$'
