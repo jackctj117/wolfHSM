@@ -1407,15 +1407,20 @@ int wh_Server_KeystoreRevokeKey(whServerContext* server, whNvmId keyId)
         return WH_ERROR_OK;
     }
 
-    /* Revoke the key by updating its metadata */
-    _revokeKey(cacheMeta);
-    /* commit the changes */
     if (isInNvm) {
-        ret = wh_Nvm_AddObjectWithReclaim(server->nvm, cacheMeta,
-                                          cacheMeta->len, cacheBuf);
+        /* Persist revocation before updating cache to keep state consistent
+         * on failure. */
+        whNvmMetadata revokedMeta = *cacheMeta;
+        _revokeKey(&revokedMeta);
+        ret = wh_Nvm_AddObjectWithReclaim(server->nvm, &revokedMeta,
+                                          revokedMeta.len, cacheBuf);
         if (ret == WH_ERROR_OK) {
+            _revokeKey(cacheMeta);
             _MarkKeyCommitted(_GetCacheContext(server, keyId), keyId, 1);
         }
+    }
+    else {
+        _revokeKey(cacheMeta);
     }
 
     return ret;

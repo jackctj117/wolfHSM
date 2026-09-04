@@ -74,6 +74,8 @@ static int      _AesMp16(whServerContext* server, uint8_t* in, word32 inSz,
 static uint16_t _PopAuthId(uint8_t* messageOne);
 static uint16_t _PopId(uint8_t* messageOne);
 static uint32_t _PopFlags(uint8_t* messageTwo);
+static int      _SheIsAppKey(uint16_t sheSlot);
+static int      _CheckLoadKeyAuth(uint16_t targetId, uint16_t authId);
 static int _SetUid(whServerContext* server, uint16_t magic, uint16_t req_size,
                    const void* req_packet, uint16_t* out_resp_size,
                    void* resp_packet);
@@ -254,6 +256,65 @@ static uint16_t _PopId(uint8_t* messageOne)
 static uint32_t _PopFlags(uint8_t* messageTwo)
 {
     return (((messageTwo[3] & 0x0f) << 4) | ((messageTwo[4] & 0x80) >> 7));
+}
+
+/* True for the general-purpose application key slots KEY_1..KEY_N, which sit
+ * between the boot slots and the volatile RAM_KEY. */
+static int _SheIsAppKey(uint16_t sheSlot)
+{
+    return (sheSlot > WH_SHE_BOOT_MAC) && (sheSlot < WH_SHE_RAM_KEY_ID);
+}
+
+/* Check that the authorizing slot may update the target slot, before any key
+ * material is read. This enforces the SHE memory update policy (AUTOSAR SHE
+ * Table 4.5), with one documented wolfHSM extension: SECRET_KEY, the ROM root
+ * of trust, may authorize any load so it can provision MASTER_ECU_KEY.
+ * Returns 0 when allowed, WH_SHE_ERC_KEY_INVALID otherwise. */
+static int _CheckLoadKeyAuth(uint16_t targetId, uint16_t authId)
+{
+    /* SECRET_KEY and PRNG_SEED are not updatable through LOAD_KEY. */
+    if ((targetId == WH_SHE_SECRET_KEY_ID) ||
+        (targetId == WH_SHE_PRNG_SEED_ID)) {
+        return WH_SHE_ERC_KEY_INVALID;
+    }
+
+    /* SECRET_KEY may authorize any load. The SHE spec lists it only for RAM_KEY
+     * (reloading an exported RAM key), but wolfHSM extends it to every slot so
+     * it can provision the first MASTER_ECU_KEY */
+    if (authId == WH_SHE_SECRET_KEY_ID) {
+        return 0;
+    }
+
+    /* MASTER_ECU_KEY may update any other slot (SHE 4.4.2.1). */
+    if (authId == WH_SHE_MASTER_ECU_KEY_ID) {
+        return 0;
+    }
+
+    /* Remaining per-target authorizers from Table 4.5 (MASTER and SECRET are
+     * already handled above). */
+    switch (targetId) {
+        case WH_SHE_BOOT_MAC_KEY_ID:
+        case WH_SHE_BOOT_MAC:
+            /* Updatable by BOOT_MAC_KEY. */
+            if (authId == WH_SHE_BOOT_MAC_KEY_ID) {
+                return 0;
+            }
+            break;
+        case WH_SHE_RAM_KEY_ID:
+            /* Updatable by any application key (or in plaintext elsewhere). */
+            if (_SheIsAppKey(authId)) {
+                return 0;
+            }
+            break;
+        default:
+            /* An application key may be rotated with the same key. */
+            if (_SheIsAppKey(targetId) && (authId == targetId)) {
+                return 0;
+            }
+            break;
+    }
+
+    return WH_SHE_ERC_KEY_INVALID;
 }
 
 static int _SetUid(whServerContext* server, uint16_t magic, uint16_t req_size,
@@ -586,6 +647,12 @@ static int _LoadKey(whServerContext* server, uint16_t magic, uint16_t req_size,
     }
     if (ret == 0) {
         ret = wh_MessageShe_TranslateLoadKeyRequest(magic, req_packet, &req);
+    }
+
+    /* Verify key update authorization. */
+    if (ret == 0) {
+        ret = _CheckLoadKeyAuth(_PopId(req.messageOne),
+                                _PopAuthId(req.messageOne));
     }
 
     /* read the auth key by AuthID */
@@ -1120,6 +1187,13 @@ static int _InitRnd(whServerContext* server, uint16_t magic, uint16_t req_size,
         }
         else {
             ret = wh_Nvm_AddObject(server->nvm, meta, meta->len, cmacOutput);
+            /* Evict stale cached seed after persisting new value. */
+            if (ret == 0) {
+                ret = wh_Server_KeystoreEvictKey(server, meta->id);
+                if (ret == WH_ERROR_NOTFOUND) {
+                    ret = 0;
+                }
+            }
         }
         if (ret != 0) {
             ret = WH_SHE_ERC_KEY_UPDATE_ERROR;
@@ -1263,6 +1337,13 @@ static int _ExtendSeed(whServerContext* server, uint16_t magic,
         }
         else {
             ret = wh_Nvm_AddObject(server->nvm, meta, meta->len, kdfInput);
+            /* Evict stale cached seed after persisting new value. */
+            if (ret == 0) {
+                ret = wh_Server_KeystoreEvictKey(server, meta->id);
+                if (ret == WH_ERROR_NOTFOUND) {
+                    ret = 0;
+                }
+            }
         }
         if (ret != 0) {
             ret = WH_SHE_ERC_KEY_UPDATE_ERROR;

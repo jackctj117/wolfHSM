@@ -448,6 +448,212 @@ int whTest_She(whClientContext* client)
         WH_TEST_PRINT("SHE LOAD KEY UID checks SUCCESS\n");
     }
 
+    /* === Authorization matrix === */
+
+    /* Authorization matrix: RAM_KEY and peer application keys may not
+     * authorize updates, SECRET_KEY and PRNG_SEED may not be targets, and
+     * BOOT_MAC_KEY may update BOOT_MAC. */
+    {
+        uint8_t ramKey[WH_SHE_KEY_SZ];
+        memset(ramKey, 0x5A, sizeof(ramKey));
+
+        if ((ret = wh_Client_SheLoadPlainKey(client, ramKey,
+                sizeof(ramKey))) != 0) {
+            WH_ERROR_PRINT("Failed to load plain RAM key %d\n", ret);
+            goto exit;
+        }
+        if ((ret = wh_She_GenerateLoadableKey(WH_SHE_MASTER_ECU_KEY_ID,
+                WH_SHE_RAM_KEY_ID, 2, 0, sheUid, vectorRawKey, ramKey,
+                messageOne, messageTwo, messageThree, messageFour,
+                messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate RAM-authorized M1/M2/M3 %d\n",
+                           ret);
+            goto exit;
+        }
+        ret = wh_Client_SheLoadKey(client, messageOne, messageTwo, messageThree,
+                outMessageFour, outMessageFive);
+        if (ret != WH_SHE_ERC_KEY_INVALID) {
+            WH_ERROR_PRINT("SHE LOAD KEY RAM-authorized MASTER_ECU update: "
+                           "expected KEY_INVALID, got %d\n", ret);
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+
+        /* One application key may not authorize an update to a different
+         * application key (Table 4.5: KEY_<n> only by MASTER or itself). The
+         * authorization check runs before any key material is read, so the
+         * slots need not be populated. */
+        if ((ret = wh_She_GenerateLoadableKey(
+                 10, 11, 1, 0, sheUid, vectorRawKey, vectorRawKey, messageOne,
+                 messageTwo, messageThree, messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate peer-authorized M1/M2/M3 %d\n",
+                           ret);
+            goto exit;
+        }
+        ret = wh_Client_SheLoadKey(client, messageOne, messageTwo, messageThree,
+                                   outMessageFour, outMessageFive);
+        if (ret != WH_SHE_ERC_KEY_INVALID) {
+            WH_ERROR_PRINT("SHE LOAD KEY peer-authorized update: "
+                           "expected KEY_INVALID, got %d\n",
+                           ret);
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+
+        /* SECRET_KEY and PRNG_SEED are not updatable LOAD_KEY targets. */
+        if ((ret = wh_She_GenerateLoadableKey(
+                 WH_SHE_SECRET_KEY_ID, WH_SHE_MASTER_ECU_KEY_ID, 1, 0, sheUid,
+                 vectorRawKey, vectorMasterEcuKey, messageOne, messageTwo,
+                 messageThree, messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate SECRET-target M1/M2/M3 %d\n",
+                           ret);
+            goto exit;
+        }
+        ret = wh_Client_SheLoadKey(client, messageOne, messageTwo, messageThree,
+                                   outMessageFour, outMessageFive);
+        if (ret != WH_SHE_ERC_KEY_INVALID) {
+            WH_ERROR_PRINT("SHE LOAD KEY SECRET_KEY target: "
+                           "expected KEY_INVALID, got %d\n",
+                           ret);
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+
+        if ((ret = wh_She_GenerateLoadableKey(
+                 WH_SHE_PRNG_SEED_ID, WH_SHE_MASTER_ECU_KEY_ID, 1, 0, sheUid,
+                 vectorRawKey, vectorMasterEcuKey, messageOne, messageTwo,
+                 messageThree, messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate PRNG-target M1/M2/M3 %d\n", ret);
+            goto exit;
+        }
+        ret = wh_Client_SheLoadKey(client, messageOne, messageTwo, messageThree,
+                                   outMessageFour, outMessageFive);
+        if (ret != WH_SHE_ERC_KEY_INVALID) {
+            WH_ERROR_PRINT("SHE LOAD KEY PRNG_SEED target: "
+                           "expected KEY_INVALID, got %d\n",
+                           ret);
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+
+        /* RAM_KEY accepts updates from application keys only, so it may not
+         * authorize itself. */
+        if ((ret = wh_She_GenerateLoadableKey(
+                 WH_SHE_RAM_KEY_ID, WH_SHE_RAM_KEY_ID, 1, 0, sheUid,
+                 vectorRawKey, ramKey, messageOne, messageTwo, messageThree,
+                 messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate RAM-target M1/M2/M3 %d\n", ret);
+            goto exit;
+        }
+        ret = wh_Client_SheLoadKey(client, messageOne, messageTwo, messageThree,
+                                   outMessageFour, outMessageFive);
+        if (ret != WH_SHE_ERC_KEY_INVALID) {
+            WH_ERROR_PRINT("SHE LOAD KEY RAM-authorized RAM_KEY update: "
+                           "expected KEY_INVALID, got %d\n",
+                           ret);
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+
+        /* BOOT_MAC_KEY may authorize an update to BOOT_MAC (Table 4.5): a
+         * same-privilege cross-slot update the spec allows. Rewrite the same
+         * digest so secure-boot state is unchanged. */
+        if ((ret = wh_She_GenerateLoadableKey(
+                 WH_SHE_BOOT_MAC, WH_SHE_BOOT_MAC_KEY_ID, 1, 0, sheUid,
+                 bootMacDigest, key, messageOne, messageTwo, messageThree,
+                 messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate BOOT_MAC_KEY-authorized "
+                           "M1/M2/M3 %d\n",
+                           ret);
+            goto exit;
+        }
+        if ((ret = wh_Client_SheLoadKey(client, messageOne, messageTwo,
+                                        messageThree, outMessageFour,
+                                        outMessageFive)) != 0) {
+            WH_ERROR_PRINT("SHE LOAD KEY BOOT_MAC_KEY-authorized BOOT_MAC "
+                           "update: expected success, got %d\n",
+                           ret);
+            goto exit;
+        }
+        /* Application keys other than BOOT_MAC_KEY may not update the boot
+         * slots. */
+        if ((ret = wh_She_GenerateLoadableKey(
+                 WH_SHE_BOOT_MAC, SHE_TEST_VECTOR_KEY_ID, 2, 0, sheUid,
+                 bootMacDigest, vectorRawKey, messageOne, messageTwo,
+                 messageThree, messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate app-key-authorized BOOT_MAC "
+                           "M1/M2/M3 %d\n",
+                           ret);
+            goto exit;
+        }
+        ret = wh_Client_SheLoadKey(client, messageOne, messageTwo, messageThree,
+                                   outMessageFour, outMessageFive);
+        if (ret != WH_SHE_ERC_KEY_INVALID) {
+            WH_ERROR_PRINT("SHE LOAD KEY app-key-authorized BOOT_MAC update: "
+                           "expected KEY_INVALID, got %d\n",
+                           ret);
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+
+        /* An application key may load RAM_KEY (Table 4.5). M4/M5 come back
+         * derived from the new key, which proves the load landed. The RAM key
+         * is reloaded in plaintext before it is used again below. */
+        memset(ramKey, 0xA5, sizeof(ramKey));
+        if ((ret = wh_She_GenerateLoadableKey(
+                 WH_SHE_RAM_KEY_ID, SHE_TEST_VECTOR_KEY_ID, 1, 0, sheUid,
+                 ramKey, vectorRawKey, messageOne, messageTwo, messageThree,
+                 messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate app-key-authorized RAM_KEY "
+                           "M1/M2/M3 %d\n",
+                           ret);
+            goto exit;
+        }
+        if ((ret = wh_Client_SheLoadKey(client, messageOne, messageTwo,
+                                        messageThree, outMessageFour,
+                                        outMessageFive)) != 0) {
+            WH_ERROR_PRINT("SHE LOAD KEY app-key-authorized RAM_KEY update: "
+                           "expected success, got %d\n",
+                           ret);
+            goto exit;
+        }
+        if (memcmp(outMessageFour, messageFour, sizeof(messageFour)) != 0 ||
+            memcmp(outMessageFive, messageFive, sizeof(messageFive)) != 0) {
+            WH_ERROR_PRINT("SHE LOAD KEY app-key-authorized RAM_KEY update: "
+                           "M4/M5 mismatch\n");
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+
+        /* An application key may be rotated with itself as the authorizing
+         * key (Table 4.5). Reload the same material with a higher counter so
+         * only the slot's counter changes. */
+        if ((ret = wh_She_GenerateLoadableKey(
+                 SHE_TEST_VECTOR_KEY_ID, SHE_TEST_VECTOR_KEY_ID, 2, 0, sheUid,
+                 vectorRawKey, vectorRawKey, messageOne, messageTwo,
+                 messageThree, messageFour, messageFive)) != 0) {
+            WH_ERROR_PRINT("Failed to generate self-authorized M1/M2/M3 %d\n",
+                           ret);
+            goto exit;
+        }
+        if ((ret = wh_Client_SheLoadKey(client, messageOne, messageTwo,
+                                        messageThree, outMessageFour,
+                                        outMessageFive)) != 0) {
+            WH_ERROR_PRINT("SHE LOAD KEY self-authorized rotation: "
+                           "expected success, got %d\n",
+                           ret);
+            goto exit;
+        }
+        if (memcmp(outMessageFour, messageFour, sizeof(messageFour)) != 0 ||
+            memcmp(outMessageFive, messageFive, sizeof(messageFive)) != 0) {
+            WH_ERROR_PRINT("SHE LOAD KEY self-authorized rotation: "
+                           "M4/M5 mismatch\n");
+            ret = WH_ERROR_ABORTED;
+            goto exit;
+        }
+        WH_TEST_PRINT("SHE LOAD KEY authorization matrix SUCCESS\n");
+    }
+
     /* === RND === */
 
     if ((ret = wh_Client_SheInitRnd(client)) != 0) {
@@ -616,7 +822,7 @@ int whTest_She(whClientContext* client)
         goto exit;
     }
     if ((ret = wh_She_GenerateLoadableKey(
-             SHE_SIZE_CHECK_KEY_ID, SHE_OVERSIZE_AUTH_ID, 1, 0, sheUid,
+             SHE_OVERSIZE_AUTH_ID, SHE_OVERSIZE_AUTH_ID, 1, 0, sheUid,
              vectorRawKey, vectorRawKey, messageOne, messageTwo, messageThree,
              messageFour, messageFive)) != 0) {
         WH_ERROR_PRINT("Failed to generate loadable key %d\n", ret);
